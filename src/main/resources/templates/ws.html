@@ -1,0 +1,194 @@
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8"/>
+  <title>WebSocket-聊天室</title>
+  <script th:src="@{js/sockjs.min.js}"></script>
+  <script th:src="@{js/stomp.js}"></script>
+  <script th:src="@{js/jquery-3.2.1.min.js}"></script>
+</head>
+<body onload="disconnect()">
+<noscript><h2 style="color: #e80b0a;">Sorry，浏览器不支持WebSocket</h2></noscript>
+<div>
+  <div id="connectDiv">
+    <button id="connect" onclick="connect();">连接</button>
+    <button id="disconnect" disabled="disabled" onclick="disconnect();">断开连接</button>
+  </div>
+
+  <div id="loginDiv" style="visibility: hidden">
+    <label>输入你的名字</label><input type="text" id="name"/>
+    <button onclick="login();">登录</button>
+  </div>
+
+  <div id="onlineList">
+    <p>当前用户：<span id="currentUser"></span></p>
+    <p>在线用户列表：</p>
+    <div id="onlineUser">
+      <input type="radio" name="user" value="all" checked><span>全部</span>
+      <br>
+      <input type="radio" name="user" value="robot"><span>机器人</span>
+    </div>
+  </div>
+
+  <div id="conversationDiv" style="visibility: hidden">
+    <label>发送消息</label><input type="text" id="message"/>
+    <button onclick="sendMessage();">发送</button>
+    <p id="response"></p>
+  </div>
+</div>
+<script type="text/javascript">
+  var stompClient = null;//客户端
+  var senderId = guid();//作为发送者ID，用于接收定向信息
+
+  //连接
+  function connect() {
+    var socket = new SockJS('/any-socket');//连接到节点
+    stompClient = Stomp.over(socket);
+    stompClient.connect({}, function (frame) {
+      //设置界面
+      document.getElementById("connect").disabled = true;
+      document.getElementById("disconnect").disabled = false;
+      document.getElementById("loginDiv").style.visibility = 'visible';
+      $("#response").html();
+
+      //订阅主题，接收服务器发送的消息
+      //接收广播消息
+      stompClient.subscribe('/topic/notice', function (message) {
+        showResponse(message);
+      });
+
+      //接收发送给自己的消息
+      stompClient.subscribe('/user/' + senderId + '/chat', function (message) {
+        showResponse(message);
+      });
+
+    });
+  }
+
+  //断开连接
+  function disconnect() {
+    if (stompClient != null) {
+      stompClient.disconnect();
+    }
+
+    //设置界面上显示和隐藏
+    document.getElementById("connect").disabled = false;
+    document.getElementById("disconnect").disabled = true;
+    document.getElementById("loginDiv").style.visibility = 'hidden';
+    document.getElementById("conversationDiv").style.visibility = 'hidden';
+    $("#response").html();
+  }
+
+  //登录消息
+  function login() {
+    document.getElementById("loginDiv").style.visibility = 'hidden';
+    document.getElementById("conversationDiv").style.visibility = 'visible';
+
+    //发送广播消息，通知自己登录了
+    var senderName = $('#name').val();
+    var receiverId = 'all';
+    var receiverName = '全部';
+    var messageType = 'login';
+    var content = senderName + '上线了！';
+
+    send(senderId, senderName, receiverId, receiverName, messageType, content);
+
+    $('#currentUser').html(senderName);
+
+    //定时通知其他用户自己已经上线
+    var t = setInterval("broadLogin()", 1000);
+  }
+
+  //聊天消息
+  function sendMessage() {
+    var senderName = $('#name').val();
+    var receiverId = $("input[name='user']:checked").val();
+    var receiverName = $("input[name='user']:checked").next("span").text();
+    var messageType = 'chat';
+    var content = $('#message').val();
+
+    send(senderId, senderName, receiverId, receiverName, messageType, content);
+  }
+
+  //发送消息到服务器
+  function send(senderId, senderName, receiverId, receiverName, messageType, content) {
+    //向端发送消息
+    stompClient.send("/chat", {},
+        JSON.stringify({
+          'senderId': senderId,
+          'senderName': senderName,
+          'receiverId': receiverId,
+          'receiverName': receiverName,
+          'messageType': messageType,
+          'content': content
+        }));
+  }
+
+  //接收消息
+  function showResponse(response) {
+    var data = JSON.parse(response.body);
+    var message = {
+      senderId: data.senderId,
+      senderName: data.senderName,
+      content: data.content,
+      sendTime: data.sendTime,
+      messageType: data.messageType
+    };
+
+    //如果是登录消息，则刷新在线用户列表
+    if (message.messageType == 'login') {
+      var onlineUserIds = new Array();//所有在线用户ID
+      $('input[name="user"]').each(function () {
+        onlineUserIds.push(this.value);
+      });
+
+      //不在列表中，则加入
+      if (onlineUserIds.indexOf(message.senderId) == -1) {
+        $("#onlineUser").append('<br>');
+        $("#onlineUser").append('<input type="radio" name="user" value="' + message.senderId
+            + '">');
+        $("#onlineUser").append('<span>' + message.senderName + '</span>');
+
+        // 显示消息内容
+        $("#response").append("<br />");
+        $("#response").append(message.sendTime);
+        $("#response").append(" ");
+        $("#response").append(message.senderName);
+        $("#response").append(":<br />");
+        $("#response").append(message.content);
+        $("#response").append("<br />");
+      }
+    } else {
+      // 显示消息内容
+      $("#response").append("<br />");
+      $("#response").append(message.sendTime);
+      $("#response").append(" ");
+      $("#response").append(message.senderName);
+      $("#response").append(":<br />");
+      $("#response").append(message.content);
+      $("#response").append("<br />");
+    }
+  }
+
+  //定时广播自己已经登录的消息，让后登录的用户发现自己
+  function broadLogin() {
+    //发送广播消息
+    var senderName = $('#name').val();
+    var receiverId = 'all';
+    var receiverName = '全部';
+    var messageType = 'login';
+    var content = senderName + '上线了！';
+
+    send(senderId, senderName, receiverId, receiverName, messageType, content);
+  }
+
+  //生成guid
+  function guid() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+      var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
+
+</script>
+</body>
+</html>

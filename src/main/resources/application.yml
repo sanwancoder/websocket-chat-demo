@@ -1,0 +1,6 @@
+spring:
+  application:
+    name: websocket-chat-demo
+
+server:
+  port: 13001
